@@ -1,2 +1,2 @@
 # fgjt-uw.github.io
-Personal website for fredtombs.com
+Personal website hosted at fredtombs.com
