@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+   <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      <title>Why yosys-abc was randomly crashing our FPGA CI — Fred Tombs</title>
+      <meta name="description" content="A 20-year-old assert in ABC written for 32-bit systems fires intermittently on 64-bit with ASLR. Here's how we tracked it down.">
+      <meta property="og:title" content="Why yosys-abc was randomly crashing our FPGA CI">
+      <meta property="og:description" content="A 20-year-old assert in ABC written for 32-bit systems fires intermittently on 64-bit with ASLR. Here's how we tracked it down.">
+      <meta property="og:image" content="images/whirlpool.jpg">
+      <meta name="twitter:card" content="summary_large_image">
+      <link rel="stylesheet" href="style.css">
+   </head>
+   <body>
+      <header>
+         <h1>
+            <a href="index.html">Fred Tombs</a>
+         </h1>
+         <nav>
+            <a href="index.html#projects">Projects</a>
+            <a href="index.html#books">Book Recommendations</a>
+            <a href="index.html#friends">Friends</a>
+         </nav>
+      </header>
+      <main>
+         <section id="home">
+            <p><a href="index.html#projects">← Projects</a></p>
+            <h2>Why yosys-abc was randomly crashing our FPGA CI (and the 20-year-old assert behind it)</h2>
+            <p><em>April 2026</em></p>
+            <p>
+               A 20-year-old assert in ABC was written for 32-bit systems, where it made some degree of sense. On 64-bit with <a href="https://en.wikipedia.org/wiki/Address_space_layout_randomization">ASLR</a>,
+               it fires intermittently; just rarely enough to look like noise. We run our FPGA toolchain dozens to hundreds of times per day, so it wasn't noise.
+            </p>
+            <p>At my day job, I'm responsible for managing a <a href="https://github.com/siliconcompiler/logik">custom FPGA toolchain</a>.
+               The toolchain is built on fully open-source tools:</p>
+            <ul>
+               <li>elaboration with the <a href="https://github.com/MikePopoloski/slang">slang</a> SystemVerilog parser (or <a href="https://github.com/ghdl/ghdl">GHDL</a> for VHDL)</li>
+               <li><a href="https://github.com/zeroasiccorp/wildebeest">wildebeest</a>, a custom synthesis engine built on top of <a href="https://github.com/berkeley-abc/abc">abc</a> and <a href="https://github.com/yosyshq/yosys">yosys</a></li>
+               <li>VTR's <a href="https://github.com/verilog-to-routing/vtr-verilog-to-routing">VPR</a> for place, route</li>
+               <li><a href="https://github.com/parallaxsw/OpenSTA">OpenSTA</a> for timing</li>
+               <li>and back to VTR's <a href="https://github.com/verilog-to-routing/vtr-verilog-to-routing/tree/master/utils/fasm">genfasm</a> for bitstream generation.</li>
+            </ul>
+            <p>As part of our day-to-day CI operation, we run our toolchain a lot. Hundreds of times per day on a slow day. This helps us catch if any architecture of CAD
+               development we've done introduced bugs or quality regressions.
+               It's stopped bugs in their tracks. But running code at that frequency has also exposed issues in our dependencies.</p>
+            <h3>The catch</h3>
+            <p>Starting late last year, every few weeks, our team would get a red 'X' in a CI run. This is not unusual when building an FPGA platform with a small team.
+               Here's the error:
+            </p>
+            <table class="c-block no-ln">
+              <tr><td class="cd">4.73.1. Extracting gate netlist of module `\----' to `&lt;abc-temp-dir&gt;/input.blif'..</td></tr>
+              <tr><td class="cd">yosys-abc: src/opt/lpk/lpkCut.c:200: unsigned int* abc::Lpk_CutTruth(abc::Lpk_Man_t*, abc::Lpk_Cut_t*, int):Assertion `((unsigned)(ABC_PTRUINT_T)pFanin-&gt;pCopy) &amp; 0xffff0000' failed.</td></tr>
+              <tr><td class="cd">ERROR: ABC failed with status 86</td></tr>
+            </table>
+            <p>Error 86 doesn't mean anything to me, but this is clearly a failed assert. After retriggering the job, I get a green check.
+              A few weeks later, we hit a different failure on a completely different design and a different FPGA architecture.</p>
+            <p>I found a report of the same error in the yosys github issue tracked (<a href="https://github.com/YosysHQ/yosys/issues/1028">here</a>), closed seven years ago as irreproducible while remaining unsolved. *takes drag from cigarette*.</p>
+            <p>Let's take a moment to reason about the assert. It's at line 200:</p>
+              <table class="c-block">
+                <tr><td class="ln">175</td><td class="cd"><span class="c-kw">unsigned</span> * <span class="c-fn">Lpk_CutTruth</span>( Lpk_Man_t * p, Lpk_Cut_t * pCut, <span class="c-kw">int</span> fInv )</td></tr>
+                <tr><td class="ln">176</td><td class="cd">{</td></tr>
+                <tr><td class="ln">177</td><td class="cd">    Hop_Man_t * pManHop = (Hop_Man_t *)p-&gt;pNtk-&gt;pManFunc;</td></tr>
+                <tr><td class="ln">178</td><td class="cd">    Hop_Obj_t * pObjHop;</td></tr>
+                <tr><td class="ln">179</td><td class="cd">    Abc_Obj_t * pObj = <span class="c-kw">NULL</span>; <span class="c-cm">// Suppress "might be used uninitialized"</span></td></tr>
+                <tr><td class="ln">180</td><td class="cd">    Abc_Obj_t * pFanin;</td></tr>
+                <tr><td class="ln">181</td><td class="cd">    <span class="c-kw">unsigned</span> * pTruth = <span class="c-kw">NULL</span>; <span class="c-cm">// Suppress "might be used uninitialized"</span></td></tr>
+                <tr><td class="ln">182</td><td class="cd">    <span class="c-kw">int</span> i, k, iCount = 0;</td></tr>
+                <tr><td class="ln">183</td><td class="cd"><span class="c-cm">//    Lpk_NodePrintCut( p, pCut );</span></td></tr>
+                <tr><td class="ln">184</td><td class="cd">    <span class="c-fn">assert</span>( pCut-&gt;nNodes &gt; 0 );</td></tr>
+                <tr><td class="ln">185</td><td class="cd">&nbsp;</td></tr>
+                <tr><td class="ln">186</td><td class="cd">    <span class="c-cm">// initialize the leaves</span></td></tr>
+                <tr><td class="ln">187</td><td class="cd">    <span class="c-fn">Lpk_CutForEachLeaf</span>( p-&gt;pNtk, pCut, pObj, i )</td></tr>
+                <tr><td class="ln">188</td><td class="cd">        pObj-&gt;pCopy = (Abc_Obj_t *)<span class="c-fn">Vec_PtrEntry</span>( p-&gt;vTtElems, fInv? pCut-&gt;nLeaves-1-i : i );</td></tr>
+                <tr><td class="ln">189</td><td class="cd">&nbsp;</td></tr>
+                <tr><td class="ln">190</td><td class="cd">    <span class="c-cm">// construct truth table in the topological order</span></td></tr>
+                <tr><td class="ln">191</td><td class="cd">    <span class="c-fn">Lpk_CutForEachNodeReverse</span>( p-&gt;pNtk, pCut, pObj, i )</td></tr>
+                <tr><td class="ln">192</td><td class="cd">    {</td></tr>
+                <tr><td class="ln">193</td><td class="cd">        <span class="c-cm">// get the local AIG</span></td></tr>
+                <tr><td class="ln">194</td><td class="cd">        pObjHop = <span class="c-fn">Hop_Regular</span>((Hop_Obj_t *)pObj-&gt;pData);</td></tr>
+                <tr><td class="ln">195</td><td class="cd">        <span class="c-cm">// clean the data field of the nodes in the AIG subgraph</span></td></tr>
+                <tr><td class="ln">196</td><td class="cd">        <span class="c-fn">Hop_ObjCleanData_rec</span>( pObjHop );</td></tr>
+                <tr><td class="ln">197</td><td class="cd">        <span class="c-cm">// set the initial truth tables at the fanins</span></td></tr>
+                <tr><td class="ln">198</td><td class="cd">        <span class="c-fn">Abc_ObjForEachFanin</span>( pObj, pFanin, k )</td></tr>
+                <tr><td class="ln">199</td><td class="cd">        {</td></tr>
+                <tr><td class="ln">200</td><td class="cd">            <span class="c-fn">assert</span>( ((<span class="c-kw">unsigned</span>)(ABC_PTRUINT_T)pFanin-&gt;pCopy) &amp; 0xffff0000 );</td></tr>
+                <tr><td class="ln">201</td><td class="cd">            <span class="c-fn">Hop_ManPi</span>( pManHop, k )-&gt;pData = pFanin-&gt;pCopy;</td></tr>
+                <tr><td class="ln">202</td><td class="cd">        }</td></tr>
+                <tr><td class="ln">203</td><td class="cd">        <span class="c-cm">// compute the truth table of internal nodes</span></td></tr>
+                <tr><td class="ln">204</td><td class="cd">        pTruth = <span class="c-fn">Lpk_CutTruth_rec</span>( pManHop, pObjHop, pCut-&gt;nLeaves, p-&gt;vTtNodes, &amp;iCount );</td></tr>
+                <tr><td class="ln">205</td><td class="cd">        <span class="c-kw">if</span> ( <span class="c-fn">Hop_IsComplement</span>((Hop_Obj_t *)pObj-&gt;pData) )</td></tr>
+                <tr><td class="ln">206</td><td class="cd">            <span class="c-fn">Kit_TruthNot</span>( pTruth, pTruth, pCut-&gt;nLeaves );</td></tr>
+                <tr><td class="ln">207</td><td class="cd">        <span class="c-cm">// set the truth table at the node</span></td></tr>
+                <tr><td class="ln">208</td><td class="cd">        pObj-&gt;pCopy = (Abc_Obj_t *)pTruth;</td></tr>
+                <tr><td class="ln">209</td><td class="cd">    }</td></tr>
+                <tr><td class="ln">210</td><td class="cd">&nbsp;</td></tr>
+                <tr><td class="ln">211</td><td class="cd">    <span class="c-cm">// make sure direct truth table is stored elsewhere (assuming the first call for direct truth!!!)</span></td></tr>
+                <tr><td class="ln">212</td><td class="cd">    <span class="c-kw">if</span> ( fInv == 0 )</td></tr>
+                <tr><td class="ln">213</td><td class="cd">    {</td></tr>
+                <tr><td class="ln">214</td><td class="cd">        pTruth = (<span class="c-kw">unsigned</span> *)<span class="c-fn">Vec_PtrEntry</span>( p-&gt;vTtNodes, iCount++ );</td></tr>
+                <tr><td class="ln">215</td><td class="cd">        <span class="c-fn">Kit_TruthCopy</span>( pTruth, (<span class="c-kw">unsigned</span> *)(ABC_PTRUINT_T)pObj-&gt;pCopy, pCut-&gt;nLeaves );</td></tr>
+                <tr><td class="ln">216</td><td class="cd">    }</td></tr>
+                <tr><td class="ln">217</td><td class="cd">    <span class="c-fn">assert</span>( iCount &lt;= <span class="c-fn">Vec_PtrSize</span>(p-&gt;vTtNodes) );</td></tr>
+                <tr><td class="ln">218</td><td class="cd">    <span class="c-kw">return</span> pTruth;</td></tr>
+                <tr><td class="ln">219</td><td class="cd">}</td></tr>
+              </table>
+              <p>This code is part of the implementation of lutpack, an abc command described in <a href="https://people.eecs.berkeley.edu/~alanmi/publications/2008/iccad08_lp.pdf">this paper</a>.
+            Let's resist the temptation to get bogged down in the algorithmic details; all we need to know is that it is a useful command for FPGA synthesis.</p>
+              <p>I see two possibilities.</p>
+              <ol>
+                <li>This is a valid defense against corruption of program state: <code>pCopy</code> should only be holding a value &ge; 0x10000.</li>
+                <li>There's some old-school pointer math going on based on an out-of-date model of address spaces and no one's been hit by this often enough to want to fix it.</li>
+              </ol>
+               <p>Let's break down the assert, and analyze it from the perspective of the second possibility.</p>
+               <p><code>assert( ((unsigned)(ABC_PTRUINT_T)pFanin-&gt;pCopy) &amp; 0xffff0000 );</code></p>
+               <p><code>pFanin</code> is an <code>Abc_Obj_t_</code>, which holds a <code>Abc_Obj_t *</code>, <code>pCopy</code>. We're off to a good start; this isn't a <code>void *</code> being interpreted as the wrong type.
+               On my system, which I guarantee you is 64-bit,
+               <code>pFanin-&gt;pCopy</code> will point to an 8B address
+               <code>(ABC_PTRUINT_T)pFanin-&gt;pCopy</code> is a cast to <code>typedef unsigned long ABC_PTRUINT_T;</code>, which is also 8B
+               <code>(unsigned)(ABC_PTRUINT_T)pFanin-&gt;pCopy</code> will be a cast down to 4B.</p>
+               <p>On 32-bit Linux, the user address space is typically <code>0x00000000-0xBFFFFFFF</code>. The heap, stack, and mmap regions sit well above <code>0x10000</code> by convention — the bottom of the address space is left unmapped to catch null dereferences, and the text segment historically starts at <code>0x08048000</code>. So in practice, heap and mmap pointers have at least one of bits 16–31 set. The assert author was relying on that convention, not a language guarantee.</p>
+               <p>On 64-bit, wouldn't you know it, pointers are 64 bits wide. When you cast to <code>unsigned</code> (32 bits) you get the lower half, and that lower half
+               can be anything — including values below <code>0x10000</code> — depending on where ASLR placed the mapping. The discrimination
+               completely breaks down.</p>
+               <p>The code was almost certainly written and tested on 32-bit, worked fine for years, then started failing intermittently
+               when the codebase moved to 64-bit systems with ASLR (which was around the time this line was last edited). Nobody noticed for a long time because it only fires when the
+               allocation happens to land at an address where <code>the_lower32_bits &lt; 0x10000</code>. With ~13 bits of brk entropy on Linux in page-sized steps, that works out to roughly 1 in 512 runs.</p>
+               <p>
+               How do I replicate the error? Well, I could run either raw abc or our synthesis tool in a tight loop in a debugger and hope for the worst,
+               but that seems like more of a plan B. Instead of hiring a bunch of monkeys with typewriters, what if I got a really eloquent monkey?</p>
+            <h3>The bait</h3>
+            <p>I should probably write my own malloc to allocate memory at 4GB boundaries, which should trigger the assert with valid input.</p>
+            <p>
+               So far this blog post has been free of AI. Unfortunately I'm going to need some assistance from an agent here. I know malloc, but I don't know how to trigger a specific memory allocation at a specific address. I imagine this is the sort of thing an infosec expert does on the daily,
+               but I wear enough hats without the white or black one. So let's phone a friend.
+            </p>
+            <table class="c-block no-ln">
+              <tr><td class="cd">Claude: Generate a malloc implementation that will trigger the assert at lpkCut.c:200 and provide instructions for how to trigger it.</td></tr>
+            </table>
+               <p>Look at <a href="https://gist.github.com/gigeresk/b9b8fbc19947955b53369cc7700886f3">this gist</a> for the full output. Here's a highlight:</p>
+              <table class="c-block">
+                <tr><td class="ln">63</td><td class="cd"><span class="c-kw">static</span> <span class="c-kw">void</span> <span class="c-fn">init</span>(<span class="c-kw">void</span>)</td></tr>
+                <tr><td class="ln">64</td><td class="cd">{</td></tr>
+                <tr><td class="ln">65</td><td class="cd">    bootstrapping = 1;</td></tr>
+                <tr><td class="ln">66</td><td class="cd">    real_malloc  = <span class="c-fn">dlsym</span>(RTLD_NEXT, "malloc");</td></tr>
+                <tr><td class="ln">67</td><td class="cd">    real_free    = <span class="c-fn">dlsym</span>(RTLD_NEXT, "free");</td></tr>
+                <tr><td class="ln">68</td><td class="cd">    real_realloc = <span class="c-fn">dlsym</span>(RTLD_NEXT, "realloc");</td></tr>
+                <tr><td class="ln">69</td><td class="cd">    bootstrapping = 0;</td></tr>
+                <tr><td class="ln">70</td><td class="cd">&nbsp;</td></tr>
+                <tr><td class="ln">71</td><td class="cd">    <span class="c-cm">/* try several 4 GB-boundary + 4 KB addresses until one maps */</span></td></tr>
+                <tr><td class="ln">72</td><td class="cd">    <span class="c-kw">uint64_t</span> candidates[] = {</td></tr>
+                <tr><td class="ln">73</td><td class="cd">        0x100001000ULL,</td></tr>
+                <tr><td class="ln">74</td><td class="cd">        0x200001000ULL,</td></tr>
+                <tr><td class="ln">75</td><td class="cd">        0x300001000ULL,</td></tr>
+                <tr><td class="ln">76</td><td class="cd">        0x400001000ULL,</td></tr>
+                <tr><td class="ln">77</td><td class="cd">        0x500001000ULL,</td></tr>
+                <tr><td class="ln">78</td><td class="cd">    };</td></tr>
+                <tr><td class="ln">79</td><td class="cd">    <span class="c-kw">for</span> (<span class="c-kw">int</span> i = 0; i &lt; 5; i++) {</td></tr>
+                <tr><td class="ln">80</td><td class="cd">        <span class="c-kw">void</span> *p = <span class="c-fn">mmap</span>((<span class="c-kw">void</span> *)candidates[i], BAD_REGION_SIZE,</td></tr>
+                <tr><td class="ln">81</td><td class="cd">                       PROT_READ | PROT_WRITE,</td></tr>
+                <tr><td class="ln">82</td><td class="cd">                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE,</td></tr>
+                <tr><td class="ln">83</td><td class="cd">                       -1, 0);</td></tr>
+                <tr><td class="ln">84</td><td class="cd">        <span class="c-kw">if</span> (p != MAP_FAILED) {</td></tr>
+                <tr><td class="ln">85</td><td class="cd">            bad_region = p;</td></tr>
+                <tr><td class="ln">86</td><td class="cd">            <span class="c-kw">break</span>;</td></tr>
+                <tr><td class="ln">87</td><td class="cd">        }</td></tr>
+                <tr><td class="ln">88</td><td class="cd">    }</td></tr>
+                <tr><td class="ln">89</td><td class="cd">&nbsp;</td></tr>
+                <tr><td class="ln">90</td><td class="cd">    <span class="c-kw">if</span> (bad_region) {</td></tr>
+                <tr><td class="ln">91</td><td class="cd">        <span class="c-kw">unsigned</span> lo32  = (<span class="c-kw">unsigned</span>)(<span class="c-kw">uintptr_t</span>)bad_region;</td></tr>
+                <tr><td class="ln">92</td><td class="cd">        <span class="c-kw">unsigned</span> check = lo32 &amp; 0xffff0000u;</td></tr>
+                <tr><td class="ln">93</td><td class="cd">        <span class="c-fn">fprintf</span>(stderr,</td></tr>
+                <tr><td class="ln">94</td><td class="cd">            "[trigger] bad_region @ %p  lower32=0x%08x  check=0x%08x  -&gt; %s\n",</td></tr>
+                <tr><td class="ln">95</td><td class="cd">            bad_region, lo32, check,</td></tr>
+                <tr><td class="ln">96</td><td class="cd">            check == 0 ? "assert will FIRE" : "BAD address choice");</td></tr>
+                <tr><td class="ln">97</td><td class="cd">    } <span class="c-kw">else</span> {</td></tr>
+                <tr><td class="ln">98</td><td class="cd">        <span class="c-fn">fprintf</span>(stderr, "[trigger] WARNING: could not map bad region – bug won't trigger\n");</td></tr>
+                <tr><td class="ln">99</td><td class="cd">    }</td></tr>
+                <tr><td class="ln">100</td><td class="cd">}</td></tr>
+              </table>
+               <p>The file is a shim over the linked malloc. It can allocate exactly at 4 GB boundaries (with a page-sized, 4KB offset). Then the hard part:
+               it intercepts exactly the right allocation, malloc(13416), for vTtElems, the leaf truth-table buffer. If the allocation was the same size as everything else,
+               I imagine we'd have to modify the allocation to a unique number. This allocation is also specific to the design I've been testing this on
+               (which happens to be named arbiter.blif). The shim lets the vTtElems allocation leak rather than free it — not a quirk of the agent, but forced by the design: memory placed at a hand-picked address was never given out by the real allocator, so it can't be handed back to it.</p>
+
+            <h3>The switch</h3>
+            <p>My intuition was to just replace this with a null check. pCopy has a * type. Why would we still have to worry about an illegal address?
+               Well, because of this line in <code>Lpk_NodeCutsCheckDsd</code>:
+            </p>
+            <table class="c-block no-ln">
+              <tr><td class="cd">pObj-&gt;pCopy = (Abc_Obj_t *)(ABC_PTRUINT_T)i;</td></tr>
+            </table>
+            <p>
+               This isn't causing any issues, but clearly the assert is safeguarding against pCopy being in the state of "holding an integer value".
+               Luckily, we can replace the assert with <code>if (pFanin-&gt;pCopy == NULL) return NULL;</code> — checking for the one value that's actually invalid rather than relying on address-space assumptions.</p>
+               <p>Another option is to build abc with <code>-DNDEBUG</code> to strip asserts from deployed builds — though worth noting the tradeoff: this assert is guarding against a real condition (an integer stuffed into a pointer field by <code>Lpk_NodeCutsCheckDsd</code>), so stripping it silently skips that check too. The null check is the cleaner fix.</p>
+
+            <h3>Takeaway</h3>
+            <p> I'll open a PR for abc and update its status here as time goes on, and I'll keep an eye open for similar bugs in the codebase.</p>
+            <p>EDA open-source projects need all the help they can get.
+               I've been working on an ABC regression test framework, and this is the perfect time to open-source it.
+               It's hosted at <a href="https://github.com/gigeresk/abc-1212">abc-1212</a> and runs CI daily. It's still in development, and 
+               needs more tests! If you know anything about ABC and want to add tracking for your use case, please file an issue or
+               pull-request some regression tests of your own.</p>
+         </section>
+      </main>
+   </body>
+</html>
