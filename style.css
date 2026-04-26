@@ -1,10 +1,15 @@
 * { margin: 0; padding: 0; box-sizing: border-box;
-  
+
   /* Color scheme */
-  
+
   --textcolor: #121212;
   --bgcolor: #fff;
   --highlight: #121212;
+
+  /* Syntax highlighting */
+  --c-kw: #0033b3;
+  --c-cm: #3d7a00;
+  --c-fn: #795e26;
 
 }
 
@@ -13,8 +18,59 @@
     --textcolor: #dadada;
     --bgcolor: #141414;
     --highlight: #dadada;
+    --c-kw: #569cd6;
+    --c-cm: #6a9955;
+    --c-fn: #dcdcaa;
   }
 }
+
+.c-kw { color: var(--c-kw); }
+.c-cm { color: var(--c-cm); }
+.c-fn { color: var(--c-fn); }
+
+pre.c-block {
+  width: auto;
+  max-width: 80ch;
+  margin: 1em 0;
+  white-space: pre-wrap;
+}
+
+table.c-block {
+  font-family: ui-monospace, SF Mono, Menlo, Monaco, Andale Mono, monospace;
+  font-size: .85em;
+  border-spacing: 0;
+  margin: 1em 0;
+  background: rgba(128, 128, 128, .07);
+}
+
+table.c-block td {
+  padding: 0;
+  white-space: pre-wrap;
+  vertical-align: top;
+}
+
+table.c-block .ln {
+  padding: 0 1.5em 0 1em;
+  color: rgba(128, 128, 128, .5);
+  text-align: right;
+  user-select: none;
+  white-space: nowrap;
+  width: 1%;
+}
+
+table.c-block .cd {
+  padding: 0 1em 0 0;
+}
+
+table.c-block.no-ln .cd {
+  padding-left: 1em;
+}
+
+table.c-block tr:first-child .ln,
+table.c-block tr:first-child .cd { padding-top: .7em; }
+
+table.c-block tr:last-child .ln,
+table.c-block tr:last-child .cd { padding-bottom: .7em; }
 
 body {
   font-size: 18px;
@@ -93,7 +149,7 @@ h2, h3, h4 {
 }
 
 p, ul, ol, article {
-  max-width: 60ch; /* Limit line-length to 60 characters */
+  max-width: 80ch;
   margin-bottom: .6em;
 }
 
@@ -189,6 +245,22 @@ textarea { /* for code samples */
   box-shadow: inset 1px 1px 0 rgba(0,0,0,.2), inset -1px -1px 0 rgba(0,0,0,.04) ;
 }
 
+pre {
+  font-size: .85em;
+  line-height: inherit;
+  padding: 1em 5vw;
+  width: 100vw;
+  margin: 1em calc(50% - 50vw);
+  display: block;
+  white-space: pre-wrap;
+  opacity: 1;
+  background: rgba(128, 128, 128, .07);
+}
+
+pre code {
+  opacity: 1;
+}
+
 /* Inline footnotes */
 
 label {
@@ -251,19 +323,6 @@ section:target iframe {
   visibility: visible;
 }
 
-/* External links */
-
-a[href*="//"]:after { 
-  font-weight: 300;
-  content: "\2197"; /* top right arrow: â†— */
-  color: var(--textcolor);
-  opacity: .25;
-}
-
-a[href*="//"]:hover:after {
-  color: var(--highlight);
-  opacity: 1;
-}
 
 /* File links */
 
@@ -274,7 +333,7 @@ a:before {
 
 /* Add more filetypes here if you want */
 
-a[href$=".pdf"]:before { content: "PDF"; }
+
 a[href$=".txt"]:before { content: "TXT"; }
 a[href$=".mp3"]:before { content: "MP3"; }
 a[href$=".jpeg"]:before,
