@@ -29,8 +29,9 @@
             <p><em>April 2026</em></p>
             <h3>The hook</h3>
             <p>
-               A 20-year-old assert in ABC was written for 32-bit systems, where it made some degree of sense. On 64-bit with <a href="https://en.wikipedia.org/wiki/Address_space_layout_randomization">ASLR</a>,
-               it fires intermittently; just rarely enough to look like noise. We run our FPGA toolchain dozens to hundreds of times per day, so it wasn't noise.
+               A 20-year-old assert in ABC was written for 32-bit systems, where it made some degree of sense. On 64-bit with <a href="https://en.wikipedia.org/wiki/Address_space_layout_randomization">address space layout randomization</a>,
+               it fires intermittently; just rarely enough to look like noise. We run our FPGA toolchain dozens to hundreds of times per day,
+               so it got loud.
             </p>
             <p>At my day job, I'm responsible for managing a <a href="https://github.com/siliconcompiler/logik">custom FPGA toolchain</a>.
                The toolchain is built on fully open-source tools:</p>
@@ -45,7 +46,7 @@
                development we've done introduced bugs or quality regressions.
                It's stopped bugs in their tracks. But running code at that frequency has also exposed issues in our dependencies.</p>
             <h3>The catch</h3>
-            <p>Starting late last year, every few weeks, our team would get a red 'X' in a CI run. This is not unusual when building an FPGA platform with a small team.
+            <p>Starting late last year, every few weeks, our team would get a red 'X' in a CI run. This is not unusual when building an FPGA platform with a tiny team.
                Here's the error:
             </p>
             <table class="c-block no-ln">
@@ -53,7 +54,7 @@
               <tr><td class="cd">yosys-abc: src/opt/lpk/lpkCut.c:200: unsigned int* abc::Lpk_CutTruth(abc::Lpk_Man_t*, abc::Lpk_Cut_t*, int):Assertion `((unsigned)(ABC_PTRUINT_T)pFanin-&gt;pCopy) &amp; 0xffff0000' failed.</td></tr>
               <tr><td class="cd">ERROR: ABC failed with status 86</td></tr>
             </table>
-            <p>Error 86 doesn't mean anything to me, but this is clearly a failed assert. After retriggering the job, I get a green check.
+            <p>Error 86 doesn't mean anything to me, but this is clearly a failed assert. After retriggering the job, I got a green check.
               A few weeks later, we hit a different failure on a completely different design and a different FPGA architecture.</p>
             <p>I found a report of the same error in the yosys github issue tracked (<a href="https://github.com/YosysHQ/yosys/issues/1028">here</a>), closed seven years ago as irreproducible while remaining unsolved. *takes drag from cigarette*.</p>
             <p>Let's take a moment to reason about the assert. It's at line 200:</p>
@@ -199,13 +200,13 @@
                Here's my final offer:
             </p>
                <table class="c-block no-ln">
-               <tr><td class="cd"><code>assert((ABC_PTRUINT_T)pFanin->pCopy &gt; 0xFFFF );  // no small int values, no NULL</code></td></tr>
+               <tr><td class="cd"><code>assert((ABC_PTRUINT_T)pFanin->pCopy &gt; 0xFFFF );  // catch small int values or NULL</code></td></tr>
                </table>
                <p>The original assert wasn't far off from this, but it had growing pains when the world moved to 64-bit. The inequality also makes the intent a bit clearer vs the bitwise <code>'&'</code>.</p>
                <p>As an added security measure, I recommend building ABC with <code>-DNDEBUG</code> to strip asserts from builds deployed to customers, who shouldn't ever have to look at asserts. </p>
 
             <h3>The release</h3>
-            <p> I'll open a PR for ABC and update its status here as time goes on, and I'll keep an eye open for similar bugs in the codebase.</p>
+            <p>I opened a PR for ABC, and it got <a href="https://github.com/berkeley-abc/abc/pull/505">merged with no notes</a>! There was one other line in the same file which was exposed to the same behaviour .</p>
             <p>Open-source EDA projects need all the help they can get!
                I've been working on an ABC regression test framework, and this is the perfect time to open-source it.
                It's hosted at <a href="https://github.com/gigeresk/abc-1212">abc-1212</a> and runs CI daily. It's still in development, and 
